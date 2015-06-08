@@ -1,15 +1,20 @@
+#!/usr/bin/python3
+import sys
 import json
 import subprocess
 from uuid import uuid4 as uuid
-from os import mkdir, chdir, unlink, getcwd
+from os import mkdir, chdir, unlink, getcwd, fork
 from os.path import splitext, exists #for checking files
+from time import sleep
 
-from uniqify import uniqify
 from urllib.parse import urlparse, parse_qs
 
 import pymongo
 import requests
 
+#from pprint import pprint
+from bson.objectid import ObjectId
+from bs4 import BeautifulSoup
 #from flask import Flask, render_template, request, g, session, flash, redirect, url_for
 
 #config loader
@@ -20,8 +25,9 @@ config_file.close()
 TEST_URL = "https://www.youtube.com/playlist?list=PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7"
 GOOGLE_API_KEY = config["google_api_key"]
 GOOGLE_API_PLAYLISTITEMS = 'https://www.googleapis.com/youtube/v3/playlistItems'
+NIGHTSNACK_PATH = "/srv/public/nightsnack"
 YTDL_PATH = "/usr/bin/youtube-dl"
-YTDL_ARGS = [YTDL_PATH, "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive"]
+YTDL_ARGS = [YTDL_PATH, "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive"] #-s does simulate
 CURRENTDIR = getcwd()
 _DB = pymongo.MongoClient()
 ##################################################################################################################
@@ -52,6 +58,12 @@ def check_and_get_id(link):
 		return False
 	return qs["list"][0]
 
+def get_playlist_name(id):
+	link = "http://youtube.com/playlist?list="+id
+	try:
+		return BeautifulSoup(requests.get(link).text).findAll("h1", {"class": "pl-header-title"})[0].text.strip()
+	except:
+		return None
 
 def get_playlist_info(link=None, id=None, pageToken=None):
 	if not id:
@@ -68,8 +80,8 @@ def get_playlist_info(link=None, id=None, pageToken=None):
 		reqdata = json.loads(req.text)
 	except:
 		reqdata = None
-#	if not isinstance(type({}), reqdata): #HELP NEEDED!!!
-#		return False
+	if not isinstance(reqdata, dict):
+		return False
 	if 'error' in reqdata:
 		print("err: ", reqdata["error"]["message"])
 		return False
@@ -103,66 +115,145 @@ def get_video_ids(link=None, id=None):
 				plinfo = get_playlist_info(link=link, pageToken=plinfo["nextPageToken"])
 	return ids
 
-def exec_ytdl(link, ids, dir):
+def exec_ytdl(ids, diff, pldir):
 	archive = "/tmp/.{}.txt".format(get_uuid())
-	buf = ""
-	file = open(archive, "w")
-	for k in ids:
-		buf += "youtube {}\n".format(k)
-	file.write(buf)
-	file.close()
-	chdir(dir)
+	todl = "/tmp/.{}.txt".format(get_uuid())
+	with open(archive, "w") as file:
+		file.write(''.join(("youtube {}\n".format(k) for k in ids)))
+	with open(todl, "w") as file:
+		file.write(''.join(("http://youtu.be/{}\n".format(k) for k in diff)))
+	print(pldir)
+	chdir(pldir)
 	args = [d for d in YTDL_ARGS]
-	args.append(archive)
-	args.append(link)
+	args += [archive, "--batch-file", todl]
 	ret = subprocess.call(args)
 	if ret == 1:
 		print("err: sth failed in ytdl!")
 	chdir(CURRENTDIR)
 	unlink(archive)
+	unlink(todl)
+	return False if ret == 1 else True
+
+def playlist_daemon():
+	pid = fork()
+	if pid:
+		while True:
+			data = db["playlists"].find()
+			for pl in data:
+				############# Check for updates
+				print("[Main]: Checking playlist '{}'".format(pl["plName"]))
+				updates = get_video_ids(id=pl["plId"])
+				if not updates:
+					# todo: Parse data if playlist is deleted
+					continue
+				diff = list(set(updates)-set(pl["videos"]))
+				difflen = len(diff)
+				print("[Main]: {} new items added into playlist".format(difflen))
+				if difflen == 0:
+					continue #no need to update this playlist
+
+				############# Prepare youtube-dl
+				pldir = NIGHTSNACK_PATH+"/playlists/"+pl["plId"]
+				if not exists(pldir):
+					mkdir(pldir)
+
+				############# Execute youtube-dl
+				rt = exec_ytdl(pl["videos"], diff, pldir)
+
+				if not rt:
+					continue #try again later
+
+				############# Check stale users and playlists (and if anybody ever wants this playlist again)
+				if len(pl["whoSubscribes"]) < 0:
+					printf("[Main]: Nobody is subscribed")
+					# todo: wait 3d and then delete playlist
+				else:
+					staleusers = []
+					for user in pl["whoSubscribes"]:
+						udata = db["users"].find_one({"_id": ObjectId(user)})
+						if not udata:
+							print("[Main]: user with id {} missing from db".format(user))
+							staleusers.append(user)
+							continue
+						if not pl["plId"] in udata["subscribedPlaylists"]:
+							udata["subscribedPlaylists"].remove(pl["plId"])
+							db["users"].update({"_id": ObjectId(user)}, {"$set": {"subscribedPlaylists": udata["subscribedPlaylists"]}}) #reinsert
+					if len(staleusers) < 0:
+						for k in staleusers:
+							print("[Main]: Removing stale user", k)
+							pl["whoSubscribes"].pop(k)
+						db["playlists"].update({"plId": pl["plId"]}, {"$set": {"whoSubscribes": pl["whoSubscribes"]}})
+
+				############# Update info
+				db["playlists"].update({"plId": pl["plId"]}, {"$set": {"videos": updates, "plName": get_playlist_name(pl["plId"])}})
+			print("[Main]: Sleeping")
+			sleep(2) #40) #sleep 4min
 
 
-db = open_db()["videos"]
-
-def user_thread(username):
-	for k in [d["playlistId"] for d in db.find({"userId": username})]:					#lappa läbi kõik kasutaja <nimi> playlistid
-		print("[Main]: checking {}".format(k))								#kontrolli {}
-		videos = get_video_ids(id=k)									#vaata playlisti {} videoid
-		if not videos:											#kui id ei sobi
-			continue										#võta järgmine
-		stat = db.find_one({"playlistId": k, "userId": username})					#tee jälle sama mis alguses????
-		diff = [d for d in videos]									#kopeeri videote list
-		if len(stat["currentVideos"]) > 0:								#kui andmebaasis on rohkem kui 1 video id
-			for u in zip(stat["currentVideos"], videos):						#lappa läbi ja võta samad välja
-				diff.remove(u[0])
-		base = "/srv/public/nightsnack/{}".format(k)							#playlisti id kaust
-		if not exists(base):										#kausta pole siis tee üks
-			mkdir(base)
-		exec_ytdl("https://www.youtube.com/playlist?list={}".format(k), stat["currentVideos"], base)	# pane youtube-dl tööle
-		db.update({"playlistId": k}, {"$set": {"currentVideos": videos}})				#ning uuenda playlisti infot
-	print("[Main]: ending updates for user {}".format(username))
-
-def main():
-	print("[Main]: Starting up")
-	for k in uniqify([d["userId"] for d in db.find()]):
-		print("[Main]: Looking playlist updates for user {}".format(k))
-		user_thread(k)
-
-def adduser():
+def tfu():
 	username = "mikroskeem"
 	playlists = [
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf1xjp4gmJ_1PBzH7a_-GdOe",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf0bohzuPl5MnT2v2QyDD7pr",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf2x7agzPsAGdEfKxIAWA7Jv",
-		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf2x7agzPsAGdEfKxIAWA7Jv"
 	]
+	adduser(username, None, None)
 	for k in playlists:
-		plid = check_and_get_id(k)
-		db.insert({"userId": username, "currentVideos": [], "playlistId": plid})
+		print(k)
+		subplaylist(username, k)
 
+def main():
+#	tfu()
+	clear_videos()
+	print("[Main]: Starting up")
+	playlist_daemon()
+
+
+def adduser(username, pw, email):
+	db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": pw}})
+
+def subplaylist(username, playlist):
+	data = db["users"].find_one({"username": username})
+	if not data:
+		return
+	if not playlist in data["subscribedPlaylists"]:
+		plid = check_and_get_id(playlist)
+		data["subscribedPlaylists"].append(plid)
+		pldata = db["playlists"].find_one({"plId": plid})
+		if not pldata:
+			db["playlists"].insert({"plName": get_playlist_name(playlist), "plId": plid, "videos": [], "whoSubscribes": [str(data["_id"])]})
+		else:
+			if not str(data["_id"]) in pldata["whoSubscribes"]:
+				pldata["whoSubscribes"].append(str(data["_id"]))
+				db["playlists"].update({"plId": plid}, {"$set": {"whoSubscribes": pldata["whoSubscribes"]}})
+			else:
+				pass # we should warn user !
+		db["users"].update({"username": username}, {"$set": {"subscribedPlaylists": data["subscribedPlaylists"]}}) #reinsert
+
+	return
+
+def clear_videos():
+	playlists = db["playlists"].find()
+	for k in playlists:
+		db["playlists"].update(k, {"$set":{"videos": []}})
+
+
+db = open_db()
+# users:
+#  { "username" str
+#    "_id" will be userid
+#    "subscribedPlaylists" list
+#    login:
+#     "password" scrypt hash
+#     "email" str
+# playlists:
+#  { "plName" str
+#    "plId" str
+#    "videos" list
+#    "whoSubscribes" list
+#  }
 main()
-
 close_db()
 
 """
