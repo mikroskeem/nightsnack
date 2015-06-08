@@ -22,11 +22,10 @@ config_file = open("config.json", "r")
 config = json.loads(config_file.read())
 config_file.close()
 
-TEST_URL = "https://www.youtube.com/playlist?list=PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7"
 GOOGLE_API_KEY = config["google_api_key"]
 GOOGLE_API_PLAYLISTITEMS = 'https://www.googleapis.com/youtube/v3/playlistItems'
-NIGHTSNACK_PATH = "/srv/public/nightsnack"
-YTDL_PATH = "/usr/bin/youtube-dl"
+NIGHTSNACK_PATH = config["nightsnack_path"]
+YTDL_PATH = config["ytdl_path"]
 YTDL_ARGS = [YTDL_PATH, "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive"] #-s does simulate
 CURRENTDIR = getcwd()
 _DB = pymongo.MongoClient()
@@ -35,6 +34,15 @@ _DB = pymongo.MongoClient()
 #app.secret_key = config["flask_secret_key"]
 ##################################################################################################################
 
+
+#############################
+# NOW, THIS VERY EXPERIMENTAL
+# FUNCTION!! CAN BREAK WHEN
+# IT WANT!
+# KEEPING EYES ON THAT O_O
+get_video_ids_html = lambda url: [parse_qs(urlparse(k["href"]).query)["v"][0] for k in BeautifulSoup(requests.get(url).text).findAll("a",{"class":"pl-video-title-link"})]
+# Atleast it saves 2 API call credits, lol
+#############################
 
 def open_db():
 	return _DB["nightsnack"]
@@ -90,6 +98,17 @@ def get_playlist_info(link=None, id=None, pageToken=None):
 	return reqdata
 
 def get_video_ids(link=None, id=None):
+	if config["use_experimental_id_fetcher"]:
+		# SO, THIS EXPERIMENTAL FUNCTION O_O
+		if id:
+			url = "https://youtube.com/playlist?list="+id
+		else:
+			url = link
+		ids = get_video_ids_html(url)
+		if not len(ids) == 0:
+			return ids
+		return [] #to avoid shit
+		# END OF THIS DISASTER
 	if id:
 		plinfo = get_playlist_info(id=id)
 	else:
@@ -137,7 +156,11 @@ def exec_ytdl(ids, diff, pldir):
 def playlist_daemon():
 	pid = fork()
 	if pid:
+		cycles = 0
 		while True:
+#			if cycles == config["max_cycles_before_refreshing_videolist"]:
+#				cycles = 0
+#				clear_videos()
 			data = db["playlists"].find()
 			for pl in data:
 				############# Check for updates
@@ -187,6 +210,7 @@ def playlist_daemon():
 				############# Update info
 				db["playlists"].update({"plId": pl["plId"]}, {"$set": {"videos": updates, "plName": get_playlist_name(pl["plId"])}})
 			print("[Main]: Sleeping")
+			cycles += 1
 			sleep(2) #40) #sleep 4min
 
 
@@ -205,7 +229,6 @@ def tfu():
 
 def main():
 #	tfu()
-	clear_videos()
 	print("[Main]: Starting up")
 	playlist_daemon()
 
@@ -222,7 +245,7 @@ def subplaylist(username, playlist):
 		data["subscribedPlaylists"].append(plid)
 		pldata = db["playlists"].find_one({"plId": plid})
 		if not pldata:
-			db["playlists"].insert({"plName": get_playlist_name(playlist), "plId": plid, "videos": [], "whoSubscribes": [str(data["_id"])]})
+			db["playlists"].insert({"plName": get_playlist_name(plid), "plId": plid, "videos": [], "whoSubscribes": [str(data["_id"])]})
 		else:
 			if not str(data["_id"]) in pldata["whoSubscribes"]:
 				pldata["whoSubscribes"].append(str(data["_id"]))
