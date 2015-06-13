@@ -1,0 +1,10 @@
+[Unit]
+Description=Run nightsnack every 5min
+After=nightsnack.service
+Requires=nightsnack.service
+
+[Service]
+ExecStart=/opt/nightsnack/main.py --noweb
+
+[Install]
+WantedBy=multi-user.target
