@@ -1,7 +1,9 @@
 #!/usr/bin/python3
 import sys
 import json
+import argparse
 import subprocess
+from base64 import b64encode as b64
 from uuid import uuid4 as uuid
 from os import mkdir, chdir, unlink, getcwd, fork
 from os.path import splitext, exists #for checking files
@@ -11,11 +13,19 @@ from urllib.parse import urlparse, parse_qs
 
 import pymongo
 import requests
+import scrypt
 
 #from pprint import pprint
 from bson.objectid import ObjectId
 from bs4 import BeautifulSoup
 #from flask import Flask, render_template, request, g, session, flash, redirect, url_for
+
+### Arguments parser
+argparser = argparse.ArgumentParser(description="nightsnack, the awesome youtube playlist downloader and syncer")
+argparser.add_argument('--noweb', help="don't start web interface and just download playlists", action='store_true')
+argparser.add_argument('--add-test-user', help="adds test user", action='store_true')
+argparser.add_argument('--simulate', help="don't create any directories or download files", action='store_true')
+args = argparser.parse_args()
 
 #config loader
 config_file = open("config.json", "r")
@@ -33,7 +43,6 @@ _DB = pymongo.MongoClient()
 #app.debug = True
 #app.secret_key = config["flask_secret_key"]
 ##################################################################################################################
-
 
 #############################
 # NOW, THIS VERY EXPERIMENTAL
@@ -135,6 +144,8 @@ def get_video_ids(link=None, id=None):
 	return ids
 
 def exec_ytdl(ids, diff, pldir):
+	if args.simulate:
+		return True
 	archive = "/tmp/.{}.txt".format(get_uuid())
 	todl = "/tmp/.{}.txt".format(get_uuid())
 	with open(archive, "w") as file:
@@ -200,15 +211,18 @@ def playlist_daemon():
 							continue
 						if not pl["plId"] in udata["subscribedPlaylists"]:
 							udata["subscribedPlaylists"].remove(pl["plId"])
-							db["users"].update({"_id": ObjectId(user)}, {"$set": {"subscribedPlaylists": udata["subscribedPlaylists"]}}) #reinsert
+							if not args.simulate:
+								db["users"].update({"_id": ObjectId(user)}, {"$set": {"subscribedPlaylists": udata["subscribedPlaylists"]}}) #reinsert
 					if len(staleusers) < 0:
 						for k in staleusers:
 							print("[Main]: Removing stale user", k)
 							pl["whoSubscribes"].pop(k)
-						db["playlists"].update({"plId": pl["plId"]}, {"$set": {"whoSubscribes": pl["whoSubscribes"]}})
+						if not args.simulate:
+							db["playlists"].update({"plId": pl["plId"]}, {"$set": {"whoSubscribes": pl["whoSubscribes"]}})
 
 				############# Update info
-				db["playlists"].update({"plId": pl["plId"]}, {"$set": {"videos": updates, "plName": get_playlist_name(pl["plId"])}})
+				if not args.simulate:
+					db["playlists"].update({"plId": pl["plId"]}, {"$set": {"videos": updates, "plName": get_playlist_name(pl["plId"])}})
 			print("[Main]: Sleeping")
 			cycles += 1
 			sleep(2) #40) #sleep 4min
@@ -216,25 +230,32 @@ def playlist_daemon():
 
 def tfu():
 	username = "mikroskeem"
+	pw = "ransom pw"
+	email = "mikroskeem@mikroskeem.eu"
 	playlists = [
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf1xjp4gmJ_1PBzH7a_-GdOe",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf0bohzuPl5MnT2v2QyDD7pr",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf2x7agzPsAGdEfKxIAWA7Jv",
 	]
-	adduser(username, None, None)
+	adduser(username, pw, email)
 	for k in playlists:
 		print(k)
 		subplaylist(username, k)
 
-def main():
-#	tfu()
-	print("[Main]: Starting up")
-	playlist_daemon()
 
+def gen_pw(pw, salt=None):
+	salt = (salt if salt else b64(get_uuid().encode()))
+	return {"digest": scrypt.hash(pw,salt), "salt": salt}
+
+def check_pw(pw, digest, salt):
+	return gen_pw(pw.encode(),salt)['digest']==digest
 
 def adduser(username, pw, email):
-	db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": pw}})
+	if args.simulate:
+		return
+	pwdata = gen_pw(pw)
+	db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": pwdata}})
 
 def subplaylist(username, playlist):
 	data = db["users"].find_one({"username": username})
@@ -245,30 +266,43 @@ def subplaylist(username, playlist):
 		data["subscribedPlaylists"].append(plid)
 		pldata = db["playlists"].find_one({"plId": plid})
 		if not pldata:
-			db["playlists"].insert({"plName": get_playlist_name(plid), "plId": plid, "videos": [], "whoSubscribes": [str(data["_id"])]})
+			if not args.simulate:
+				db["playlists"].insert({"plName": get_playlist_name(plid), "plId": plid, "videos": [], "whoSubscribes": [str(data["_id"])]})
 		else:
 			if not str(data["_id"]) in pldata["whoSubscribes"]:
 				pldata["whoSubscribes"].append(str(data["_id"]))
-				db["playlists"].update({"plId": plid}, {"$set": {"whoSubscribes": pldata["whoSubscribes"]}})
+				if not args.simulate:
+					db["playlists"].update({"plId": plid}, {"$set": {"whoSubscribes": pldata["whoSubscribes"]}})
 			else:
 				pass # we should warn user !
-		db["users"].update({"username": username}, {"$set": {"subscribedPlaylists": data["subscribedPlaylists"]}}) #reinsert
+		if not args.simulate:
+			db["users"].update({"username": username}, {"$set": {"subscribedPlaylists": data["subscribedPlaylists"]}}) #reinsert
 
 	return
 
 def clear_videos():
 	playlists = db["playlists"].find()
 	for k in playlists:
-		db["playlists"].update(k, {"$set":{"videos": []}})
+		if not args.simulate:
+			db["playlists"].update(k, {"$set":{"videos": []}})
+
+def main():
+	if args.add_test_user:
+		tfu()
+	if True: #args.noweb:
+		print("[Main]: Starting up")
+		playlist_daemon()
 
 
-db = open_db()
+
 # users:
 #  { "username" str
 #    "_id" will be userid
 #    "subscribedPlaylists" list
 #    login:
-#     "password" scrypt hash
+#     "password"
+#       "scrypt hash"
+#       "scrypt digest"
 #     "email" str
 # playlists:
 #  { "plName" str
@@ -276,71 +310,9 @@ db = open_db()
 #    "videos" list
 #    "whoSubscribes" list
 #  }
-main()
-close_db()
-
-"""
-app = Flask(__name__)
-
-@app.before_request
-def before_request():
-	if 'userid' in session:
-		db = open_db()
-		if db.find_one({"id": session["userid"]}) == None:
-		if test_mode:
-	stat = db.find_one({"playlistId": "PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7"})
-	if not stat:
-		db.insert({"userId": "markv", "currentVideos": get_video_ids(TEST_URL), "playlistId": "PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7"})
-		print("restart program pls")
-		exit(0)
-	print("querying playlist for updates")
-	videos = get_video_ids(TEST_URL)
-	diff = [d for d in videos]
-	for k in zip(stat["currentVideos"], videos):
-		diff.remove(k[0])
-	exec_ytdl(TEST_URL, stat["currentVideos"], "/home/mark/nightsnack-test")
-
-	session.pop('userid')
-
-def flask_open_db():
-	if not hasattr(g, 'db'):
-		g.db = open_db()
-	return g.db
-
-@app.teardown_appcontext
-def flask_close_db(err=None):
-	if hasattr(g, 'db'):
-		g.db.close()
-
-@app.route("/")
-def main()
-	return render_template('home.html')
-
-@app.route('/add')
-def add():
-	return render_template('add.html')
-
-
-@app.route("/register", methods=["POST", "GET"])
-def register():
-	if 'userid' in session:
-		return redirect(url_for("registreeritud"))
-	if request.method == 'POST':
-		print(request.form)
-		if (not 'g-recaptcha-response' in request.form) or ('g-recaptcha-response' in request.form and len(request.form['g-recaptcha-response']) < 1):
-			flash("Don't skip captcha!!")
-			return render_template("register.html")
-
-	return render_template("register.html")
-
-@app.route("/logout")
-def logout():
-	if 'userid' in session:
-		session.pop('userid')
-	return redirect(url_for("main"))
 
 
 if __name__ == '__main__':
-	startup()
-	app.run(host="0.0.0.0")
-"""
+	db = open_db()
+	main()
+	close_db()
