@@ -12,4 +12,6 @@ It uses MongoDB to store user and video information and BitTorrent Sync for send
 ## Set up
 You probably won't need to set up, because this is going to be a service.
 
-MongoDB, Google API key, modules from `requrements.txt` and good uplink are required.
+BitTorrent Sync API Key (request it from their site), MongoDB, modules from `requrements.txt` and good uplink are required.
+
+Google API key is very reccomended, because I don't know when Google changes Youtube page structure.
