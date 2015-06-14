@@ -1,14 +1,15 @@
 #!/usr/bin/python3
-import sys
+import re
 import json
+import hashlib #file sha256sum
 import argparse
 import subprocess
 from base64 import b64encode as b64
 from uuid import uuid4 as uuid
-from os import mkdir, chdir, unlink, getcwd, fork
-from os.path import splitext, exists #for checking files
+from os import mkdir, chdir, listdir, unlink, getcwd, fork
+from os.path import splitext, exists
+from math import ceil, floor
 from time import sleep
-
 from urllib.parse import urlparse, parse_qs
 
 import pymongo
@@ -18,6 +19,7 @@ import scrypt
 #from pprint import pprint
 from bson.objectid import ObjectId
 from bs4 import BeautifulSoup
+from tinytag import TinyTag
 #from flask import Flask, render_template, request, g, session, flash, redirect, url_for
 
 ### Arguments parser
@@ -311,6 +313,11 @@ def main():
 #  { "plName" str
 #    "plId" str
 #    "videos" list
+#      "video"
+#       "id"
+#       "sha256 hash"
+#       "duration"
+#       "filesize"
 #    "whoSubscribes" list
 #  }
 
