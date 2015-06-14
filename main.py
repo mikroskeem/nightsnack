@@ -7,7 +7,7 @@ import subprocess
 from base64 import b64encode as b64
 from uuid import uuid4 as uuid
 from os import mkdir, chdir, listdir, unlink, getcwd, fork
-from os.path import splitext, exists
+from os.path import exists
 from math import ceil, floor
 from time import sleep
 from urllib.parse import urlparse, parse_qs
@@ -20,7 +20,6 @@ import scrypt
 from bson.objectid import ObjectId
 from bs4 import BeautifulSoup
 from tinytag import TinyTag
-#from flask import Flask, render_template, request, g, session, flash, redirect, url_for
 
 ### Arguments parser
 argparser = argparse.ArgumentParser(description="nightsnack, the awesome youtube playlist downloader and syncer")
@@ -318,6 +317,7 @@ def main():
 #       "sha256 hash"
 #       "duration"
 #       "filesize"
+#       "path"
 #    "whoSubscribes" list
 #  }
 
