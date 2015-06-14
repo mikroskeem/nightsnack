@@ -7,10 +7,10 @@ import subprocess
 from base64 import b64encode as b64
 from uuid import uuid4 as uuid
 from os import mkdir, chdir, listdir, unlink, getcwd, fork
-from os.path import exists
-from math import ceil, floor
+from os.path import exists #checks file existence
+from math import ceil, floor #for rounding audio duration
 from time import sleep
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs #parses url entered by user
 
 import pymongo
 import requests
@@ -30,38 +30,28 @@ argparser.add_argument('--clear-playlists', help="clears playlist data in databa
 args = argparser.parse_args()
 
 #config loader
-config_file = open("config.json", "r")
-config = json.loads(config_file.read())
-config_file.close()
+with open("config.json", "r") as conf:
+	config = json.loads(conf.read())
 
-GOOGLE_API_KEY = config["google_api_key"]
-GOOGLE_API_PLAYLISTITEMS = 'https://www.googleapis.com/youtube/v3/playlistItems'
 NIGHTSNACK_PATH = config["nightsnack_path"]
 YTDL_PATH = config["ytdl_path"]
 YTDL_ARGS = [YTDL_PATH, "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive"] #-s does simulate
 CURRENTDIR = getcwd()
 _DB = pymongo.MongoClient()
-##################################################################################################################
-#app.debug = True
-#app.secret_key = config["flask_secret_key"]
-##################################################################################################################
 
-#############################
-# NOW, THIS VERY EXPERIMENTAL
-# FUNCTION!! CAN BREAK WHEN
-# IT WANT!
-# KEEPING EYES ON THAT O_O
-get_video_ids_html = lambda url: [parse_qs(urlparse(k["href"]).query)["v"][0] for k in BeautifulSoup(requests.get(url).text).findAll("a",{"class":"pl-video-title-link"})]
-# Atleast it saves 2 API call credits, lol
-#############################
 
-def open_db():
-	return _DB["nightsnack"]
-
-def close_db():
-	_DB.close()
-
+# Lambdas
 get_uuid = lambda: str(uuid())
+get_video_ids = lambda url: [parse_qs(urlparse(k["href"]).query)["v"][0] for k in BeautifulSoup(requests.get(url).text).findAll("a",{"class":"pl-video-title-link"})]
+get_playlist_name = lambda id: BeautifulSoup(requests.get("http://youtube.com/playlist?list="+id).text).findAll("h1", {"class": "pl-header-title"})[0].text.strip()
+open_db = lambda: _DB["nightsnack"]
+close_db = lambda: _DB.close()
+check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['digest']==digest
+adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)})
+
+def generate_password(pw, salt=None):
+	salt = (salt if salt else b64(get_uuid().encode()))
+	return {"digest": scrypt.hash(pw,salt), "salt": salt}
 
 
 def check_and_get_id(link):
@@ -77,74 +67,6 @@ def check_and_get_id(link):
 		return False
 	return qs["list"][0]
 
-def get_playlist_name(id):
-	link = "http://youtube.com/playlist?list="+id
-	try:
-		return BeautifulSoup(requests.get(link).text).findAll("h1", {"class": "pl-header-title"})[0].text.strip()
-	except:
-		return None
-
-def get_playlist_info(link=None, id=None, pageToken=None):
-	if not id:
-		plid = check_and_get_id(link)
-		if not plid:
-			return False
-	else:
-		plid = id
-	if pageToken:
-		req = requests.get(GOOGLE_API_PLAYLISTITEMS, params={'part': 'snippet', 'playlistId': plid, 'key': GOOGLE_API_KEY, 'maxResults': '50', 'pageToken': pageToken})
-	else:
-		req = requests.get(GOOGLE_API_PLAYLISTITEMS, params={'part': 'snippet', 'playlistId': plid, 'key': GOOGLE_API_KEY, 'maxResults': '50'})
-	try:
-		reqdata = json.loads(req.text)
-	except:
-		reqdata = None
-	if not isinstance(reqdata, dict):
-		return False
-	if 'error' in reqdata:
-		print("err: ", reqdata["error"]["message"])
-		return False
-	if not ("kind" in reqdata and reqdata['kind'] == 'youtube#playlistItemListResponse'):
-		print("warn: response is", reqdata)
-	return reqdata
-
-def get_video_ids(link=None, id=None):
-	if config["use_experimental_id_fetcher"]:
-		# SO, THIS EXPERIMENTAL FUNCTION O_O
-		if id:
-			url = "https://youtube.com/playlist?list="+id
-		else:
-			url = link
-		ids = get_video_ids_html(url)
-		if not len(ids) == 0:
-			return ids
-		return [] #to avoid shit
-		# END OF THIS DISASTER
-	if id:
-		plinfo = get_playlist_info(id=id)
-	else:
-		plinfo = get_playlist_info(link=link)
-	ids = []
-	if not plinfo:
-		return False
-	videos_in_playlist = plinfo["pageInfo"]["totalResults"]
-	videos_to_go = videos_in_playlist
-	while not videos_to_go == 0:
-		old_ids_len = len(ids)
-		for k in plinfo["items"]:
-			resource_id = k["snippet"]["resourceId"]
-			if not resource_id["kind"] == 'youtube#video':
-				print("err: resource_id['kind'] is", resource_id["kind"])
-				continue
-			ids.append(resource_id["videoId"])
-		videos_to_go = videos_in_playlist - len(ids)
-		if not videos_to_go == 0:
-			if id:
-				plinfo = get_playlist_info(id=id, pageToken=plinfo["nextPageToken"])
-			else:
-				plinfo = get_playlist_info(link=link, pageToken=plinfo["nextPageToken"])
-	return ids
-
 def exec_ytdl(ids, diff, pldir):
 	if args.simulate:
 		return True
@@ -154,7 +76,6 @@ def exec_ytdl(ids, diff, pldir):
 		file.write(''.join(("youtube {}\n".format(k) for k in ids)))
 	with open(todl, "w") as file:
 		file.write(''.join(("http://youtu.be/{}\n".format(k) for k in diff)))
-	print(pldir)
 	chdir(pldir)
 	args = [d for d in YTDL_ARGS]
 	args += [archive, "--batch-file", todl]
@@ -169,11 +90,7 @@ def exec_ytdl(ids, diff, pldir):
 def playlist_daemon():
 	pid = fork()
 	if pid:
-		cycles = 0
 		while True:
-#			if cycles == config["max_cycles_before_refreshing_videolist"]:
-#				cycles = 0
-#				clear_videos()
 			data = db["playlists"].find()
 			for pl in data:
 				############# Check for updates
@@ -226,7 +143,6 @@ def playlist_daemon():
 				if not args.simulate:
 					db["playlists"].update({"plId": pl["plId"]}, {"$set": {"videos": updates, "plName": get_playlist_name(pl["plId"])}})
 			print("[Main]: Sleeping")
-			cycles += 1
 			sleep(2) #40) #sleep 4min
 
 
@@ -242,24 +158,9 @@ def tfu():
 	]
 	adduser(username, pw, email)
 	for k in playlists:
-		print(k)
-		subplaylist(username, k)
+		subscribe_playlist(username, k)
 
-
-def gen_pw(pw, salt=None):
-	salt = (salt if salt else b64(get_uuid().encode()))
-	return {"digest": scrypt.hash(pw,salt), "salt": salt}
-
-def check_pw(pw, digest, salt):
-	return gen_pw(pw.encode(),salt)['digest']==digest
-
-def adduser(username, pw, email):
-	if args.simulate:
-		return
-	pwdata = gen_pw(pw)
-	db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": pwdata}})
-
-def subplaylist(username, playlist):
+def subscribe_playlist(username, playlist):
 	data = db["users"].find_one({"username": username})
 	if not data:
 		return
@@ -282,11 +183,11 @@ def subplaylist(username, playlist):
 
 	return
 
-def clear_videos():
-	playlists = db["playlists"].find()
-	for k in playlists:
-		if not args.simulate:
-			db["playlists"].update(k, {"$set":{"videos": []}})
+def clear_playlists():
+	if not args.simulate:
+		return
+	for k in db["playlists"].find():
+		db["playlists"].update(k, {"$set":{"videos": []}})
 
 def main():
 	if args.add_test_user:

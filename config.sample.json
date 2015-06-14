@@ -1,8 +1,4 @@
 {
-	"google_api_key": "https://developers.google.com/youtube/registering_an_application#Create_API_Keys OR enable 'use_experimental_id_fetcher'",
-	"flask_secret": "12345qwert",
 	"nightsnack_path": "/srv/public/nightsnack",
-	"ytdl_path": "/usr/bin/youtube-dl",
-	"max_cycles_before_refreshing_videolist": 15,
-	"use_experimental_id_fetcher": false
+	"ytdl_path": "/usr/bin/youtube-dl"
 }
