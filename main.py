@@ -25,6 +25,7 @@ argparser = argparse.ArgumentParser(description="nightsnack, the awesome youtube
 argparser.add_argument('--noweb', help="don't start web interface and just download playlists", action='store_true')
 argparser.add_argument('--add-test-user', help="adds test user", action='store_true')
 argparser.add_argument('--simulate', help="don't create any directories or download files", action='store_true')
+argparser.add_argument('--clear-playlists', help="clears playlist data in database and rescans filesystem", action='store_true')
 args = argparser.parse_args()
 
 #config loader
@@ -289,6 +290,8 @@ def clear_videos():
 def main():
 	if args.add_test_user:
 		tfu()
+	if args.clear_playlists:
+		clear_playlists()
 	if True: #args.noweb:
 		print("[Main]: Starting up")
 		playlist_daemon()
