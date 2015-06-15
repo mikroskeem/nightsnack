@@ -14,4 +14,6 @@ You probably won't need to set up, because this is going to be a service.
 
 BitTorrent Sync API Key (request it from their site), MongoDB, modules from `requrements.txt` and good uplink are required.
 
-Google API key is very reccomended, because I don't know when Google changes Youtube page structure.
+
+## Screenshot
+![gnome-terminal, terminus regular 14 and oh, nightsnack running (commit a2ad67f4fa35d0f030598b06fb72aeeab5613561)](http://i.imgur.com/O052fT1.png)
