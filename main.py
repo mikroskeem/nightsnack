@@ -47,7 +47,7 @@ get_playlist_name = lambda id: BeautifulSoup(requests.get("http://youtube.com/pl
 open_db = lambda: _DB["nightsnack"]
 close_db = lambda: _DB.close()
 check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['digest']==digest
-adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)})
+adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)}})
 
 def generate_password(pw, salt=None):
 	salt = (salt if salt else b64(get_uuid().encode()))
@@ -77,9 +77,9 @@ def exec_ytdl(ids, diff, pldir):
 	with open(todl, "w") as file:
 		file.write(''.join(("http://youtu.be/{}\n".format(k) for k in diff)))
 	chdir(pldir)
-	args = [d for d in YTDL_ARGS]
-	args += [archive, "--batch-file", todl]
-	ret = subprocess.call(args)
+	ytdlargs = [d for d in YTDL_ARGS]
+	ytdlargs += [archive, "--batch-file", todl]
+	ret = subprocess.call(ytdlargs)
 	if ret == 1:
 		print("err: sth failed in ytdl!")
 	chdir(CURRENTDIR)
@@ -95,7 +95,7 @@ def playlist_daemon():
 			for pl in data:
 				############# Check for updates
 				print("[Main]: Checking playlist '{}'".format(pl["plName"]))
-				updates = get_video_ids(id=pl["plId"])
+				updates = get_video_ids("https://youtube.com/playlist?list="+pl["plId"])
 				if not updates:
 					# todo: Parse data if playlist is deleted
 					continue
