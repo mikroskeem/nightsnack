@@ -42,12 +42,24 @@ _DB = pymongo.MongoClient()
 
 # Lambdas
 get_uuid = lambda: str(uuid())
-get_video_ids = lambda url: [parse_qs(urlparse(k["href"]).query)["v"][0] for k in BeautifulSoup(requests.get(url).text).findAll("a",{"class":"pl-video-title-link"})]
 get_playlist_name = lambda id: BeautifulSoup(requests.get("http://youtube.com/playlist?list="+id).text).findAll("h1", {"class": "pl-header-title"})[0].text.strip()
 open_db = lambda: _DB["nightsnack"]
 close_db = lambda: _DB.close()
 check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['digest']==digest
 adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)}})
+
+def get_video_ids(url):
+	ids = []
+	_extract = lambda body: [parse_qs(urlparse(k["href"]).query)["v"][0] for k in BeautifulSoup(body).findAll("a",{"class":"pl-video-title-link"})]
+	for k in _extract(requests.get(url).text):
+		ids.append(k)
+	# Check for more links
+	try:
+		for k in _extract(requests.get("https://youtube.com"+re.search('data-uix-load-more-href="(.+?)"', str(BeautifulSoup(requests.get(url).text))).group(1)).json()["content_html"]):
+			ids.append(k)
+	except AttributeError:
+		pass
+	return ids
 
 def generate_password(pw, salt=None):
 	salt = (salt if salt else b64(get_uuid().encode()))
