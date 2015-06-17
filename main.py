@@ -150,6 +150,45 @@ class YoutubeDLThread(Thread):
 		log({"text": "youtube-dl thread started", "type": "debug"})
 		log({"text": "pl: %s" %self.playlists, "type": "debug"})
 
+def adduser(username, password, email):
+	u = db["users"].find_one({"login": {"username": "username"}})
+	if u:
+		return 0 #User already exists
+	else:
+		return db["users"].insert({ #Returns ObjectId
+			"subscribedPlaylists": [],
+			"options": {
+				"audioformat": "ogg",
+				"keepremoved": "no"
+			}, "login": {
+				"username": username,
+				"password": generate_password(password,None),
+				"email": email
+			}
+		})
+
+def subscribe_playlist(uid, url):
+	u = db["users"].find_one({"_id": ObjectId(uid)})
+	if not u:
+		return False
+	plid = check_and_get_id(url)
+	if isinstance(plid, int):
+		log({"text": "error occured while getting playlist id from url: "+url, "type": "error", "data": {"errcode": plid}})
+		return False
+	if plid in u["subscribedPlaylists"]:
+		log({"text": "User {} already subscribes playlist {}".format(u["login"]["username"], plid), "type": "warning"})
+		return True
+	plname = get_playlist_name(plid)
+	if not plname:
+		log({"text": "Playlist with id %s isn't correct or available" % plid , "type": "error"})
+		return False
+	p = db["playlists"].find_one({"plId": plid})
+	if not p:
+		db["playlists"].insert({"plName": plname, "plId": plid, "videos": []})
+	u["subscribedPlaylists"].append(plid)
+	db["users"].update({"_id": ObjectId(uid)}, {"$set": {"subscribedPlaylists": u["subscribedPlaylists"]}})
+	return True
+
 def add_test_user():
 	username = "mikroskeem"
 	pw = "ransom pw"
@@ -161,6 +200,9 @@ def add_test_user():
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf2x7agzPsAGdEfKxIAWA7Jv",
 		"https://www.youtube.com/playlist?list=IwillPwnU" # Fake url
 	]
+	userid = adduser(username,pw,email)
+	for k in playlists:
+		subscribe_playlist(userid, k)
 
 def real_main(balance=True, bal_every_pl=5):
 	playlists = list(db["playlists"].find())
@@ -178,6 +220,7 @@ def real_main(balance=True, bal_every_pl=5):
 
 def main():
 	if args.add_test_user:
+		add_test_user()
 		log({"text": "Test user added, relaunch program", "type": "normal"})
 		return
 	if args.clear_playlists:
@@ -213,6 +256,8 @@ def log(data):
 #    _id			ObejctId
 #    subscribedPlaylists[]	list
 #    options:			dict
+#     audioformat		str, default ogg
+#     keepremoved		str, default no
 #    login:			dict
 #     username			str
 #     password:			dict
@@ -230,12 +275,10 @@ def log(data):
 #      duration			int
 #      path			str
 #  }
-def adduser(username, password, email):
-	u = db["users"].find_one({"login": {"username": "username"}})
-	if u:
-		return 0 #User already exists
 
-#def scan_fs(
+def clear_playlists():	pass
+def clear_downloads():	pass
+def rescan():		pass
 
 
 if __name__ == '__main__':
