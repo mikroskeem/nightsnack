@@ -1,4 +1,5 @@
 {
+	"google_api_key": "https://developers.google.com/youtube/registering_an_application#Create_API_Keys",
 	"nightsnack_path": "/srv/public/nightsnack",
 	"ytdl_path": "/usr/bin/youtube-dl"
 }

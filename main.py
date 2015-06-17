@@ -48,18 +48,36 @@ close_db = lambda: _DB.close()
 check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['digest']==digest
 adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)}})
 
-def get_video_ids(url):
+def playlistItems_req(plid, pageToken=None):
+	data = http_get("https://www.googleapis.com/youtube/v3/playlistItems", params={'part': 'snippet', 'playlistId': plid, 'key': config["google_api_key"], 'maxResults': '50', "pageToken": pageToken}).json()
+	if "error" in data and "message" in data["error"]:
+		return False
+	return data
+
+def get_video_ids(id):
 	ids = []
-	_extract = lambda body: [parse_qs(urlparse(k["href"]).query)["v"][0] for k in BeautifulSoup(body).findAll("a",{"class":"pl-video-title-link"})]
-	for k in _extract(requests.get(url).text):
-		ids.append(k)
-	# Check for more links
-	try:
-		for k in _extract(requests.get("https://youtube.com"+re.search('data-uix-load-more-href="(.+?)"', str(BeautifulSoup(requests.get(url).text))).group(1)).json()["content_html"]):
-			ids.append(k)
-	except AttributeError:
-		pass
+	req = playlistItems_req(id)
+	if not req:
+		return False
+	videos_to_go = int(req["pageInfo"]["totalResults"])
+	while not videos_to_go == 0:
+		for k in req["items"]:
+			if k["snippet"]["resourceId"]["kind"] == 'youtube#video':
+				vid = k["snippet"]["resourceId"]["videoId"]
+				if get_yt_dur(vid):
+					ids.append(vid)
+		videos_to_go = req["pageInfo"]["totalResults"] - len(ids)
+		if videos_to_go != 0:
+			req = playlistItems_req(id, pageToken=req["nextPageToken"])
+		else:
+			req = playlistItems_req(id)
+		if not req:
+			return False
 	return ids
+
+
+
+
 
 def generate_password(pw, salt=None):
 	salt = (salt if salt else b64(get_uuid().encode()))
