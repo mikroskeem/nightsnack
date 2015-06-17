@@ -1,68 +1,55 @@
 #!/usr/bin/python3
-import re
-import json
-import hashlib #file sha256sum
-import argparse
-import subprocess
-from base64 import b64encode as b64
-from uuid import uuid4 as uuid
-from os import mkdir, chdir, listdir, unlink, getcwd, fork
-from os.path import exists #checks file existence
-from math import ceil, floor #for rounding audio duration
-from time import sleep
-from urllib.parse import urlparse, parse_qs #parses url entered by user
-
-import pymongo
-import requests
-import scrypt
-
-#from pprint import pprint
+from argparse import ArgumentParser
+from bs4 import BeautifulSoup as bs
 from bson.objectid import ObjectId
-from bs4 import BeautifulSoup
+from hashlib import sha256
+from json import loads as json_load
+from math import ceil, floor
+from os import mkdir, chdir, listdir, unlink, fork, urandom
+from os.path import exists
+from pprint import pprint #remove
+from pymongo import MongoClient
+from re import search as rex
+from requests import get as http_get
+from scrypt import hash as scrypt_hash
+from subprocess import call
+from threading import Thread
+from time import sleep
 from tinytag import TinyTag
+from urllib.parse import urlparse, parse_qs
 
 ### Arguments parser
-argparser = argparse.ArgumentParser(description="nightsnack, the awesome youtube playlist downloader and syncer")
+argparser = ArgumentParser(description="nightsnack, the awesome youtube playlist downloader and syncer")
 argparser.add_argument('--noweb', help="don't start web interface and just download playlists", action='store_true')
 argparser.add_argument('--add-test-user', help="adds test user", action='store_true')
 argparser.add_argument('--simulate', help="don't create any directories or download files", action='store_true')
-argparser.add_argument('--clear-playlists', help="clears playlist data in database and rescans filesystem", action='store_true')
+argparser.add_argument('--clear-playlists', help="clears playlist data in database, then exits", action='store_true')
+argparser.add_argument('--rescan', help="clears playlist data in database and rescans filesystem", action='store_true')
+argparser.add_argument('--clear-downloads', help="clears playlist data in database and deletes files, then exits", action='store_true')
 args = argparser.parse_args()
 
-#config loader
+### Database
+_DB = None
+
+### Config loader
 with open("config.json", "r") as conf:
-	config = json.loads(conf.read())
+	config = json_load(conf.read())
 
-NIGHTSNACK_PATH = config["nightsnack_path"]
-YTDL_PATH = config["ytdl_path"]
-YTDL_ARGS = [YTDL_PATH, "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive"] #-s does simulate
-CURRENTDIR = getcwd()
-_DB = pymongo.MongoClient()
-
-
-# Lambdas
-get_uuid = lambda: str(uuid())
-get_playlist_name = lambda id: BeautifulSoup(requests.get("http://youtube.com/playlist?list="+id).text).findAll("h1", {"class": "pl-header-title"})[0].text.strip()
-open_db = lambda: _DB["nightsnack"]
-close_db = lambda: _DB.close()
+### Useful lambdas
+chunks = lambda l,n: [l[i:i+n] for i in range(0, len(l), n)]
+get_user = lambda user: db["users"].find_one({"login": {"username": username}})
+get_random = lambda: ("".join([hex(ord(z))[2:] for z in str(urandom(12))])).encode()
 check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['digest']==digest
-adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)}})
+get_file_dur = lambda path: TinyTag.get(path).duration
+format_song_path = lambda plid,songname: "{}/{}".format(format_playlist_dir(plid), songname)
+scan_playlist_dir = lambda plid: [{"path": format_song_path(plid,d), "id": d[-15:][:-4], "duration": get_file_dur(format_song_path(plid,d)), "hash": hashlib.sha256(readf(format_song_path(plid,d))).hexdigest()} for d in listdir(format_playlist_dir(plid))]
 
-def get_yt_dur(id):
-#	try:
-#		m,s = [int(x) for x in re.search("PT(.+?)M(.+?)S",re.search('<meta content="(.+?)" itemprop="duration">',str(BeautifulSoup(requests.get("https://www.youtube.com/watch?v="+id).text))).group(1)).groups()]
-#		return 60*m+s
-#	except AttributeError: #Video doesn't exist/Video removed
-#		return False
-	return True
+### Functions
 
-
-def playlistItems_req(url, pageToken=None):
-	id = check_and_get_id(url)
-	if not id:
-		return False
-	data = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params={'part': 'snippet', 'playlistId': id, 'key': config["google_api_key"], 'maxResults': '50', "pageToken": pageToken}).json()
+def playlistItems_req(plid, pageToken=None):
+	data = http_get("https://www.googleapis.com/youtube/v3/playlistItems", params={'part': 'snippet', 'playlistId': plid, 'key': config["google_api_key"], 'maxResults': '50', "pageToken": pageToken}).json()
 	if "error" in data and "message" in data["error"]:
+		log({"text": "error occured while fetching playlist info: %s" %data["error"]["message"], "type": "error", "data": {"plid": plid}})
 		return False
 	return data
 
@@ -76,7 +63,9 @@ def get_video_ids(id):
 		for k in req["items"]:
 			if k["snippet"]["resourceId"]["kind"] == 'youtube#video':
 				vid = k["snippet"]["resourceId"]["videoId"]
-				if get_yt_dur(vid):
+				if not get_yt_dur(vid):
+					log({"text": "Video id %s seems to be unavailable" % vid, "type": "warning"})
+				else:
 					ids.append(vid)
 		videos_to_go = req["pageInfo"]["totalResults"] - len(ids)
 		if videos_to_go != 0:
@@ -87,104 +76,81 @@ def get_video_ids(id):
 			return False
 	return ids
 
-def generate_password(pw, salt=None):
-	salt = (salt if salt else b64(get_uuid().encode()))
-	return {"digest": scrypt.hash(pw,salt), "salt": salt}
+def get_playlist_name(id):
+	try:
+		return bs(http_get("http://youtube.com/playlist?list="+id).text).findAll("h1", {"class": "pl-header-title"})[0].text.strip()
+	except IndexError: #No such playlist
+		return False
 
+def format_playlist_dir(plid):
+	plname = get_playlist_name(plid)
+	if not plname:
+		return False
+	return "{}/playlists/{}".format(config["nightsnack_path"],plname)
+
+def open_db():
+	global _DB
+	if not _DB:
+		_DB = MongoClient()
+	return _DB["nightsnack_dev"]
+
+def close_db():
+	global _DB
+	if _DB:
+		_DB.close()
+		_DB = None
+
+def readf(path):
+	with open(path, "rb") as f:
+		return f.read()
+
+def get_yt_dur(id):
+	try:
+		m,s = [int(x) for x in rex("PT(.+?)M(.+?)S",rex('<meta content="(.+?)" itemprop="duration">',str(bs(http_get("https://www.youtube.com/watch?v="+id)))).group(1)).groups()]
+		return 60*m+s
+	except AttributeError: #Video doesn't exist/Video removed
+		return False
+
+def generate_password(pw, salt):
+	salt = (salt if salt else get_random())
+	return {"digest": scrypt_hash(pw,salt), "salt": salt}
 
 def check_and_get_id(link):
 	res = urlparse(link)
 	if not res.scheme or not res.netloc or not res.path or not res.query:
-		return False
+		return 0	# Invalid url
 	if not res.netloc in ['www.youtube.com', 'youtube.com']:
-		return False
+		return 1	# Not youtube address
 	if not res.path in ['/playlist', '/watch']:
-		return False
+		return 2	# Not playlist url
 	qs = parse_qs(res.query)
 	if not "list" in qs:
-		return False
-	return qs["list"][0]
+		return 3	# No "list" in querystring
+	return qs["list"][0]	# Return playlist Id
 
-def exec_ytdl(ids, diff, pldir):
-	if args.simulate:
-		return True
-	archive = "/tmp/.{}.txt".format(get_uuid())
-	todl = "/tmp/.{}.txt".format(get_uuid())
-	with open(archive, "w") as file:
-		file.write(''.join(("youtube {}\n".format(k) for k in ids)))
-	with open(todl, "w") as file:
-		file.write(''.join(("http://youtu.be/{}\n".format(k) for k in diff)))
-	chdir(pldir)
-	ytdlargs = [d for d in YTDL_ARGS]
-	ytdlargs += [archive, "--batch-file", todl]
-	ret = subprocess.call(ytdlargs)
-	if ret == 1:
-		print("err: sth failed in ytdl!")
-	chdir(CURRENTDIR)
-	unlink(archive)
-	unlink(todl)
-	return False if ret == 1 else True
+class YoutubeDLThread(Thread):
+	def __init__(self, pl):
+		super(YoutubeDLThread, self).__init__()
+		self.playlists = pl
+		log({"text": "youtube-dl thread starting", "type": "debug"})
+	def exec_ytdl(self, downloaded, new, pldir):
+		if args.simulate:
+			return True
+		archive = "/tmp/.{}.txt".format(get_random())
+		todl = "/tmp/.{}.txt".format(get_random())
+		with open(archive, "w") as file:
+			file.write(''.join(("youtube {}\n".format(k) for k in ids)))
+		with open(todl, "w") as file:
+			file.write(''.join(("http://youtu.be/{}\n".format(k) for k in diff)))
+		ret = call([config["ytdl_path"], "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive", archive, "--batch-file", todl, "-o", pldir+"%(title)s.%(ext)s"])
+		unlink(archive)
+		unlink(todl)
+		return False if ret else True
+	def run(self):
+		log({"text": "youtube-dl thread started", "type": "debug"})
+		log({"text": "pl: %s" %self.playlists, "type": "debug"})
 
-def playlist_daemon():
-	pid = fork()
-	if pid:
-		while True:
-			data = db["playlists"].find()
-			for pl in data:
-				############# Check for updates
-				print("[Main]: Checking playlist '{}'".format(pl["plName"]))
-				updates = get_video_ids("https://youtube.com/playlist?list="+pl["plId"])
-				if not updates:
-					# todo: Parse data if playlist is deleted
-					continue
-				diff = list(set(updates)-set(pl["videos"]))
-				difflen = len(diff)
-				print("[Main]: {} new items added into playlist".format(difflen))
-				if difflen == 0:
-					continue #no need to update this playlist
-
-				############# Prepare youtube-dl
-				pldir = NIGHTSNACK_PATH+"/playlists/"+pl["plId"]
-				if not exists(pldir):
-					mkdir(pldir)
-
-				############# Execute youtube-dl
-				rt = exec_ytdl(pl["videos"], diff, pldir)
-
-				if not rt:
-					continue #try again later
-
-				############# Check stale users and playlists (and if anybody ever wants this playlist again)
-				if len(pl["whoSubscribes"]) < 0:
-					printf("[Main]: Nobody is subscribed")
-					# todo: wait 3d and then delete playlist
-				else:
-					staleusers = []
-					for user in pl["whoSubscribes"]:
-						udata = db["users"].find_one({"_id": ObjectId(user)})
-						if not udata:
-							print("[Main]: user with id {} missing from db".format(user))
-							staleusers.append(user)
-							continue
-						if not pl["plId"] in udata["subscribedPlaylists"]:
-							udata["subscribedPlaylists"].remove(pl["plId"])
-							if not args.simulate:
-								db["users"].update({"_id": ObjectId(user)}, {"$set": {"subscribedPlaylists": udata["subscribedPlaylists"]}}) #reinsert
-					if len(staleusers) < 0:
-						for k in staleusers:
-							print("[Main]: Removing stale user", k)
-							pl["whoSubscribes"].pop(k)
-						if not args.simulate:
-							db["playlists"].update({"plId": pl["plId"]}, {"$set": {"whoSubscribes": pl["whoSubscribes"]}})
-
-				############# Update info
-				if not args.simulate:
-					db["playlists"].update({"plId": pl["plId"]}, {"$set": {"videos": updates, "plName": get_playlist_name(pl["plId"])}})
-			print("[Main]: Sleeping")
-			sleep(2) #40) #sleep 4min
-
-
-def tfu():
+def add_test_user():
 	username = "mikroskeem"
 	pw = "ransom pw"
 	email = "mikroskeem@mikroskeem.eu"
@@ -193,75 +159,87 @@ def tfu():
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf0bohzuPl5MnT2v2QyDD7pr",
 		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf2x7agzPsAGdEfKxIAWA7Jv",
+		"https://www.youtube.com/playlist?list=IwillPwnU" # Fake url
 	]
-	adduser(username, pw, email)
-	for k in playlists:
-		subscribe_playlist(username, k)
 
-def subscribe_playlist(username, playlist):
-	data = db["users"].find_one({"username": username})
-	if not data:
-		return
-	if not playlist in data["subscribedPlaylists"]:
-		plid = check_and_get_id(playlist)
-		data["subscribedPlaylists"].append(plid)
-		pldata = db["playlists"].find_one({"plId": plid})
-		if not pldata:
-			if not args.simulate:
-				db["playlists"].insert({"plName": get_playlist_name(plid), "plId": plid, "videos": [], "whoSubscribes": [str(data["_id"])]})
-		else:
-			if not str(data["_id"]) in pldata["whoSubscribes"]:
-				pldata["whoSubscribes"].append(str(data["_id"]))
-				if not args.simulate:
-					db["playlists"].update({"plId": plid}, {"$set": {"whoSubscribes": pldata["whoSubscribes"]}})
-			else:
-				pass # we should warn user !
-		if not args.simulate:
-			db["users"].update({"username": username}, {"$set": {"subscribedPlaylists": data["subscribedPlaylists"]}}) #reinsert
-
+def real_main(balance=True, bal_every_pl=5):
+	playlists = list(db["playlists"].find())
+	if balance and bal_every_pl*2 > len(playlists):
+		playlists = chunks(playlists, bal_every_pl)
+		for pl in playlists:
+			thr = YoutubeDLThread(pl)
+			thr.daemon = True
+			thr.start()
+	else:
+		thr = YoutubeDLThread(playlist)
+		thr.daemon = True
+		thr.start()
 	return
-
-def clear_playlists():
-	if not args.simulate:
-		return
-	for k in db["playlists"].find():
-		db["playlists"].update(k, {"$set":{"videos": []}})
 
 def main():
 	if args.add_test_user:
-		tfu()
+		log({"text": "Test user added, relaunch program", "type": "normal"})
+		return
 	if args.clear_playlists:
+		log({"text": "Clearing playlists", "type": "normal"})
 		clear_playlists()
-	if True: #args.noweb:
-		print("[Main]: Starting up")
-		playlist_daemon()
+		log({"text": "Playlists cleared", "type": "normal"})
+		return
+	if args.clear_downloads:
+		log({"text": "Clearing playlists and downloaded files", "type": "normal"})
+		clear_downloads()
+		log({"text": "Playlists and downloaded files cleared", "type": "normal"})
+		return
+	if args.rescan:
+		log({"text": "Rescanning downloads", "type": "normal"})
+		rescan()
+		return #disable this
+	if args.noweb:
+		log({"text": "Starting up", "type": "normal"})
+		try:
+			real_main()
+		except KeyboardInterrupt:
+			log({"text": "Ctrl-C", "type": "normal"})
+		return
+	log({"text": "Start with --noweb, since web part isn't implemented", "type": "normal"})
 
+
+def log(data):
+	pprint(data) #todo make some formatting
 
 
 # users:
-#  { "username" str
-#    "_id" will be userid
-#    "subscribedPlaylists" list
-#    login:
-#     "password"
-#       "scrypt hash"
-#       "scrypt digest"
-#     "email" str
+#  {
+#    _id			ObejctId
+#    subscribedPlaylists[]	list
+#    options:			dict
+#    login:			dict
+#     username			str
+#     password:			dict
+#      hash			bytes (scrypt hash, urandom(12) in hex)
+#      digest			bytes (scrypt digest)
+#     email			str
 # playlists:
-#  { "plName" str
-#    "plId" str
-#    "videos" list
-#      "video"
-#       "id"
-#       "sha256 hash"
-#       "duration"
-#       "filesize"
-#       "path"
-#    "whoSubscribes" list
+#  {
+#    plName			str
+#    plId			str
+#    videos[]:			list
+#     video:			dict
+#      id			str
+#      hash			str
+#      duration			int
+#      path			str
 #  }
+def adduser(username, password, email):
+	u = db["users"].find_one({"login": {"username": "username"}})
+	if u:
+		return 0 #User already exists
+
+#def scan_fs(
 
 
 if __name__ == '__main__':
 	db = open_db()
 	main()
 	close_db()
+
