@@ -21,12 +21,16 @@ from urllib.parse import urlparse, parse_qs
 ### Arguments parser
 argparser = ArgumentParser(description="nightsnack, the awesome youtube playlist downloader and syncer")
 argparser.add_argument('--noweb', help="don't start web interface and just download playlists", action='store_true')
+argparser.add_argument('--debug', help="more verbose logging", action='store_true')
 argparser.add_argument('--add-test-user', help="adds test user", action='store_true')
 argparser.add_argument('--simulate', help="don't create any directories or download files", action='store_true')
 argparser.add_argument('--clear-playlists', help="clears playlist data in database, then exits", action='store_true')
 argparser.add_argument('--rescan', help="clears playlist data in database and rescans filesystem", action='store_true')
 argparser.add_argument('--clear-downloads', help="clears playlist data in database and deletes files, then exits", action='store_true')
 args = argparser.parse_args()
+
+### Print debug messages or not
+Debug = False
 
 ### Database
 _DB = None
@@ -219,6 +223,9 @@ def real_main(balance=True, bal_every_pl=5):
 	return
 
 def main():
+	if args.debug:
+		global Debug
+		Debug = True
 	if args.add_test_user:
 		add_test_user()
 		log({"text": "Test user added, relaunch program", "type": "normal"})
@@ -248,6 +255,8 @@ def main():
 
 
 def log(data):
+	if data["type"] == "debug" and Debug == False:
+		return
 	pprint(data) #todo make some formatting
 
 
