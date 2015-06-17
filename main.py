@@ -49,11 +49,12 @@ check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['dig
 adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)}})
 
 def get_yt_dur(id):
-	try:
-		m,s = [int(x) for x in re.search("PT(.+?)M(.+?)S",re.search('<meta content="(.+?)" itemprop="duration">',str(BeautifuSoup(requests.get("https://www.youtube.com/watch?v="+id)))).group(1)).groups()]
-		return 60*m+s
-	except AttributeError: #Video doesn't exist/Video removed
-		return False
+#	try:
+#		m,s = [int(x) for x in re.search("PT(.+?)M(.+?)S",re.search('<meta content="(.+?)" itemprop="duration">',str(BeautifulSoup(requests.get("https://www.youtube.com/watch?v="+id).text))).group(1)).groups()]
+#		return 60*m+s
+#	except AttributeError: #Video doesn't exist/Video removed
+#		return False
+	return True
 
 
 def playlistItems_req(url, pageToken=None):
