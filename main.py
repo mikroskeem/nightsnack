@@ -48,8 +48,11 @@ close_db = lambda: _DB.close()
 check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['digest']==digest
 adduser = lambda username,pw,email: db["users"].insert({"username": username, "subscribedPlaylists": [], "login": {"email": email, "password": generate_password(pw,None)}})
 
-def playlistItems_req(plid, pageToken=None):
-	data = http_get("https://www.googleapis.com/youtube/v3/playlistItems", params={'part': 'snippet', 'playlistId': plid, 'key': config["google_api_key"], 'maxResults': '50', "pageToken": pageToken}).json()
+def playlistItems_req(url, pageToken=None):
+	id = check_and_get_id(url)
+	if not id:
+		return False
+	data = requests.get("https://www.googleapis.com/youtube/v3/playlistItems", params={'part': 'snippet', 'playlistId': id, 'key': config["google_api_key"], 'maxResults': '50', "pageToken": pageToken}).json()
 	if "error" in data and "message" in data["error"]:
 		return False
 	return data
@@ -64,8 +67,7 @@ def get_video_ids(id):
 		for k in req["items"]:
 			if k["snippet"]["resourceId"]["kind"] == 'youtube#video':
 				vid = k["snippet"]["resourceId"]["videoId"]
-				if get_yt_dur(vid):
-					ids.append(vid)
+				ids.append(vid)
 		videos_to_go = req["pageInfo"]["totalResults"] - len(ids)
 		if videos_to_go != 0:
 			req = playlistItems_req(id, pageToken=req["nextPageToken"])
@@ -74,10 +76,6 @@ def get_video_ids(id):
 		if not req:
 			return False
 	return ids
-
-
-
-
 
 def generate_password(pw, salt=None):
 	salt = (salt if salt else b64(get_uuid().encode()))
