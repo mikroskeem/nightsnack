@@ -205,6 +205,8 @@ def add_test_user():
 		"https://www.youtube.com/playlist?list=IwillPwnU" # Fake url
 	]
 	userid = adduser(username,pw,email)
+	if not userid: #test user already exists
+		return False
 	for k in playlists:
 		subscribe_playlist(userid, k)
 
@@ -227,8 +229,10 @@ def main():
 		global Debug
 		Debug = True
 	if args.add_test_user:
-		add_test_user()
-		log({"text": "Test user added, relaunch program", "type": "normal"})
+		if add_test_user():
+			log({"text": "Test user added, relaunch program", "type": "normal"})
+		else:
+			log({"text": "Test user seems to exist already", "type": "warning"})
 		return
 	if args.clear_playlists:
 		log({"text": "Clearing playlists", "type": "normal"})
