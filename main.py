@@ -110,7 +110,7 @@ def readf(path):
 
 def get_yt_dur(id):
 	try:
-		m,s = [int(x) for x in rex("PT(.+?)M(.+?)S",rex('<meta content="(.+?)" itemprop="duration">',str(bs(http_get("https://www.youtube.com/watch?v="+id).text))).group(1)).groups()]
+		m,s = [int(x) for x in rex("PT(.+?)M(.+?)S",rex('<meta content="(.+?)" itemprop="duration">',str(bs(http_get("https://www.youtube.com/watch?v="+id).text).find_all("meta", {"itemprop": "duration"}))).group(1)).groups()]
 		return 60*m+s
 	except AttributeError: #Video doesn't exist/Video removed
 		return False
