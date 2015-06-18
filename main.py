@@ -110,7 +110,7 @@ def readf(path):
 
 def get_yt_dur(id):
 	try:
-		m,s = [int(x) for x in rex("PT(.+?)M(.+?)S",rex('<meta content="(.+?)" itemprop="duration">',str(bs(http_get("https://www.youtube.com/watch?v="+id)))).group(1)).groups()]
+		m,s = [int(x) for x in rex("PT(.+?)M(.+?)S",rex('<meta content="(.+?)" itemprop="duration">',str(bs(http_get("https://www.youtube.com/watch?v="+id).text))).group(1)).groups()]
 		return 60*m+s
 	except AttributeError: #Video doesn't exist/Video removed
 		return False
@@ -140,19 +140,29 @@ class YoutubeDLThread(Thread):
 	def exec_ytdl(self, downloaded, new, pldir):
 		if args.simulate:
 			return True
-		archive = "/tmp/.{}.txt".format(get_random())
-		todl = "/tmp/.{}.txt".format(get_random())
+		archive = "/tmp/.{}.txt".format(get_random().decode())
+		todl = "/tmp/.{}.txt".format(get_random().decode())
 		with open(archive, "w") as file:
-			file.write(''.join(("youtube {}\n".format(k) for k in ids)))
+			file.write(''.join(("youtube {}\n".format(k) for k in downloaded)))
 		with open(todl, "w") as file:
-			file.write(''.join(("http://youtu.be/{}\n".format(k) for k in diff)))
-		ret = call([config["ytdl_path"], "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive", archive, "--batch-file", todl, "-o", pldir+"%(title)s.%(ext)s"])
+			file.write(''.join(("http://youtu.be/{}\n".format(k) for k in new)))
+		ret = 0 #call([config["ytdl_path"], "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive", archive, "--batch-file", todl, "-o", pldir+"%(title)s.%(ext)s"])
+		pprint([config["ytdl_path"], "-w", "-x", "--audio-format", "vorbis", "--audio-quality", "320K", "-f", "bestaudio", "--download-archive", archive, "--batch-file", todl, "-o", pldir+"/%(title)s.%(ext)s"])
 		unlink(archive)
 		unlink(todl)
 		return False if ret else True
 	def run(self):
 		log({"text": "youtube-dl thread started", "type": "debug"})
-		log({"text": "pl: %s" %self.playlists, "type": "debug"})
+		#log({"text": "pl: %s" %self.playlists, "type": "debug"})
+		print(len(self.playlists))
+		for playlist in self.playlists:
+			print(playlist)
+			updates = get_video_ids(playlist["plId"])
+			new = list(set(updates)-set(playlist["videos"]))
+			if not new:
+				continue
+			stat = self.exec_ytdl(playlist["videos"], new, format_playlist_dir(playlist["plId"]))
+			continue
 
 def adduser(username, password, email):
 	u = db["users"].find_one({"login": {"username": "username"}})
@@ -219,7 +229,7 @@ def real_main(balance=True, bal_every_pl=5):
 			thr.daemon = True
 			thr.start()
 	else:
-		thr = YoutubeDLThread(playlist)
+		thr = YoutubeDLThread(playlists)
 		thr.daemon = True
 		thr.start()
 	return
@@ -250,10 +260,7 @@ def main():
 		return #disable this
 	if args.noweb:
 		log({"text": "Starting up", "type": "normal"})
-		try:
-			real_main()
-		except KeyboardInterrupt:
-			log({"text": "Ctrl-C", "type": "normal"})
+		real_main(balance=False)
 		return
 	log({"text": "Start with --noweb, since web part isn't implemented", "type": "normal"})
 
@@ -298,4 +305,10 @@ if __name__ == '__main__':
 	db = open_db()
 	main()
 	close_db()
-
+	print("main exit, going to loop")
+	try:
+		while True:
+			sleep(3600)
+	except KeyboardInterrupt:
+		log({"text": "Ctrl-C", "type": "normal"})
+#		exit(1)
