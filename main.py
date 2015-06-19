@@ -47,6 +47,7 @@ check_password = lambda pw,digest,salt: generate_password(pw.encode(),salt)['dig
 get_file_dur = lambda path: TinyTag.get(path).duration
 format_song_path = lambda plid,songname: "{}/{}".format(format_playlist_dir(plid), songname)
 scan_playlist_dir = lambda plid: [{"path": format_song_path(plid,d), "id": d[-15:][:-4], "duration": get_file_dur(format_song_path(plid,d)), "hash": hashlib.sha256(readf(format_song_path(plid,d))).hexdigest()} for d in listdir(format_playlist_dir(plid))]
+format_playlist_dir = lambda plid: "{}/playlists/{}".format(config["nightsnack_path"],plid)
 
 ### Functions
 
@@ -103,13 +104,6 @@ def get_playlist_name(id):
 		return bs(http_get("http://youtube.com/playlist?list="+id).text).findAll("h1", {"class": "pl-header-title"})[0].text.strip()
 	except IndexError: #No such playlist
 		return False
-
-def format_playlist_dir(plid):
-	plname = get_playlist_name(plid)
-	if not plname:
-		return False
-	return "{}/playlists/{}".format(config["nightsnack_path"],plname)
-
 def open_db():
 	global _DB
 	if not _DB:
