@@ -51,27 +51,45 @@ scan_playlist_dir = lambda plid: [{"path": format_song_path(plid,d), "id": d[-15
 ### Functions
 
 def playlistItems_req(plid, pageToken=None):
-	data = http_get("https://www.googleapis.com/youtube/v3/playlistItems", params={'part': 'snippet', 'playlistId': plid, 'key': config["google_api_key"], 'maxResults': '50', "pageToken": pageToken}).json()
+	data = http_get("https://www.googleapis.com/youtube/v3/playlistItems", params={'part': "contentDetails", 'playlistId': plid, 'key': config["google_api_key"], 'maxResults': '50', "pageToken": pageToken}).json()
 	if "error" in data and "message" in data["error"]:
 		log({"text": "error occured while fetching playlist info: %s" %data["error"]["message"], "type": "error", "data": {"plid": plid}})
 		return False
 	return data
 
+def videos_req(vids):
+	a = chunks(vids,50)
+	video_data = []
+	for k in a:
+		data = http_get("https://www.googleapis.com/youtube/v3/videos", params={"id": ",".join(k), "part": "contentDetails", "maxResults": 50, "key": config["google_api_key"]}).json()
+		if "error" in data and "message" in data["error"]:
+			log({"text": "error occured while fetching videos info: %s" %data["error"]["message"], "type": "error", "data": {"vid": k}})
+			return False
+		video_data += data["items"]
+	return video_data
+
 def get_video_ids(id):
 	ids = []
+	_tmp_ids = []
+	_unav_ids = []
 	req = playlistItems_req(id)
 	if not req:
 		return False
 	videos_to_go = int(req["pageInfo"]["totalResults"])
 	while not videos_to_go == 0:
 		for k in req["items"]:
-			if k["snippet"]["resourceId"]["kind"] == 'youtube#video':
-				vid = k["snippet"]["resourceId"]["videoId"]
-				if not get_yt_dur(vid):
-					log({"text": "Video id %s seems to be unavailable" % vid, "type": "warning"})
-				else:
-					ids.append(vid)
-		videos_to_go = req["pageInfo"]["totalResults"] - len(ids)
+			if k["kind"] == "youtube#playlistItem":
+				_tmp_ids.append(k["contentDetails"]["videoId"])
+		_check = get_yt_dur(_tmp_ids)
+		if not _check:
+			return False
+		for a in _tmp_ids:
+			if _check[a]:
+				ids.append(a)
+			else:
+				_unav_ids.append(a)
+				_tmp_ids.remove(a) # Stop throwing warnings about that
+		videos_to_go = (int(req["pageInfo"]["totalResults"]) - len(_tmp_ids)) - len(_unav_ids)
 		if videos_to_go != 0:
 			req = playlistItems_req(id, pageToken=req["nextPageToken"])
 		else:
@@ -108,12 +126,50 @@ def readf(path):
 	with open(path, "rb") as f:
 		return f.read()
 
-def get_yt_dur(id):
-	try:
-		m,s = [int(x) for x in rex("PT(.+?)M(.+?)S",rex('<meta content="(.+?)" itemprop="duration">',str(bs(http_get("https://www.youtube.com/watch?v="+id).text).find_all("meta", {"itemprop": "duration"}))).group(1)).groups()]
-		return 60*m+s
-	except AttributeError: #Video doesn't exist/Video removed
+def get_yt_dur(ids):
+	data = videos_req(ids)
+	if not data:
 		return False
+	unavailable = list(set(ids) - set([d["id"] for d in data]))
+	unavailable_vids = []
+	for k in unavailable:
+		unavailable_vids.append(k)
+		log({"text": "Video id %s seems to be unavailable" % k, "type": "warning"})
+	durations = {}
+	for u in data:
+		durations[u["id"]] = parse_ISO8601(u["contentDetails"]["duration"])
+	for k in unavailable_vids:
+		durations[k] = False
+	return durations
+
+def parse_ISO8601(dur):
+	test1 = rex("PT(.+?)H", dur)
+	if test1:
+		return int(test1.group(1))*3600
+	test2 = rex("PT(.+?)H(.+?)M",dur)
+	if test2:
+		h,m = [int(x) for x in test2.groups()]
+		return 3600*h+60*m
+	test3 = rex("PT(.+?)H(.+?)S",dur)
+	if test3:
+		h,s = [int(x) for x in test3.groups()]
+		return 3600*h+s
+	test4 = rex("PT(.+?)H(.+?)M(.+?)S",dur)
+	if test4:
+		h,m,s = [int(x) for x in test4.groups()]
+		return 3600*h+60*h+s
+	test5 = rex("PT(.+?)M", dur)
+	if test5:
+		return int(test5.group(1))*60
+	test6 = rex("PT(.+?)M(.+?)S",dur)
+	if test6:
+		m,s = [int(x) for x in test6.groups()]
+		return 60*m+s
+	test7 = rex("PT(.+?)S",dur)
+	if test7:
+		return int(test7.group(1))
+	log({"text": "CAN'T PARSE FUCKING GOOGLE FORMATTING: "+dur, "type": "error"})
+	return False #I'm out ...
 
 def generate_password(pw, salt):
 	salt = (salt if salt else get_random())
@@ -153,16 +209,16 @@ class YoutubeDLThread(Thread):
 		return False if ret else True
 	def run(self):
 		log({"text": "youtube-dl thread started", "type": "debug"})
-		#log({"text": "pl: %s" %self.playlists, "type": "debug"})
 		print(len(self.playlists))
 		for playlist in self.playlists:
-			print(playlist)
+			print(playlist["plName"])
 			updates = get_video_ids(playlist["plId"])
 			new = list(set(updates)-set(playlist["videos"]))
 			if not new:
 				continue
 			stat = self.exec_ytdl(playlist["videos"], new, format_playlist_dir(playlist["plId"]))
 			continue
+		log({"text": "youtube-dl thread exit", "type": "debug"})
 
 def adduser(username, password, email):
 	u = db["users"].find_one({"login": {"username": "username"}})
@@ -311,4 +367,3 @@ if __name__ == '__main__':
 			sleep(3600)
 	except KeyboardInterrupt:
 		log({"text": "Ctrl-C", "type": "normal"})
-#		exit(1)
