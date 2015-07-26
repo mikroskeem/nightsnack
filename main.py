@@ -189,10 +189,11 @@ def tfu():
 	pw = "ransom pw"
 	email = "mikroskeem@mikroskeem.eu"
 	playlists = [
-		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf1xjp4gmJ_1PBzH7a_-GdOe",
-		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7",
-		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf0bohzuPl5MnT2v2QyDD7pr",
-		"https://www.youtube.com/playlist?list=PLGE39Wpa-qf2x7agzPsAGdEfKxIAWA7Jv",
+		"http://www.youtube.com/playlist?list=PLGE39Wpa-qf1xjp4gmJ_1PBzH7a_-GdOe", # Nice Music
+		"http://www.youtube.com/playlist?list=PLGE39Wpa-qf2ZxMvAu9ASEmBYpauAzy-C", # test
+		"http://www.youtube.com/playlist?list=PLGE39Wpa-qf3PNgSiXuT9qkv2EK1-3WE7", # tra see muusika mida vaja
+		"http://www.youtube.com/playlist?list=PLGE39Wpa-qf2x7agzPsAGdEfKxIAWA7Jv", # smooth
+		"http://www.youtube.com/playlist?list=PLGE39Wpa-qf1hwbntQWP-BWjtzTlHkS50", # good dubstep
 	]
 	adduser(username, pw, email)
 	for k in playlists:
